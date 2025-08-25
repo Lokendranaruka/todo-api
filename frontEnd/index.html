@@ -1,0 +1,315 @@
+<!-- import React, { useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
+
+/**
+ * React Todo App (Frontend)
+ * -------------------------------------------------------------
+ * ✨ Connects to your existing backend at http://localhost:5000/api/todos
+ *    (change API_BASE below if needed)
+ *
+ * Features
+ *  - Create / Read / Update / Delete (CRUD)
+ *  - Toggle complete, inline edit title
+ *  - Filters (All / Active / Completed)
+ *  - Search + Sort + Bulk actions
+ *  - Optimistic UI updates with rollback on error
+ *  - Minimal, clean Tailwind UI
+ */
+
+const API_BASE_DEFAULT = "http://localhost:5000/api/todos";
+
+function useDebounced(value, delay = 350) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
+}
+
+function Toolbar({ apiBase, setApiBase, query, setQuery, filter, setFilter, sort, setSort, refresh, loading }) {
+  return (
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center gap-2 w-full md:w-auto">
+        <input
+          className="w-full md:w-96 rounded-2xl border px-4 py-2 outline-none focus:ring"
+          placeholder="Backend URL (API base)"
+          value={apiBase}
+          onChange={(e) => setApiBase(e.target.value)}
+        />
+        <button onClick={refresh} disabled={loading} className="rounded-2xl px-4 py-2 border shadow hover:shadow-md disabled:opacity-50">
+          {loading ? "Loading…" : "Reload"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="rounded-2xl border px-3 py-2 outline-none focus:ring"
+          placeholder="Search…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select className="rounded-2xl border px-3 py-2" value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="all">All</option>
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+        </select>
+        <select className="rounded-2xl border px-3 py-2" value={sort} onChange={(e) => setSort(e.target.value)}>
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="az">A → Z</option>
+          <option value="za">Z → A</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function TodoInput({ onAdd, busy }) {
+  const [title, setTitle] = useState("");
+  const inputRef = useRef(null);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    await onAdd(trimmed);
+    setTitle("");
+    inputRef.current?.focus();
+  };
+
+  return (
+    <form onSubmit={submit} className="flex gap-2">
+      <input
+        ref={inputRef}
+        className="flex-1 rounded-2xl border px-4 py-2 outline-none focus:ring"
+        placeholder="What needs to be done?"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+      <button disabled={busy} className="rounded-2xl border px-4 py-2 shadow hover:shadow-md disabled:opacity-50">
+        Add
+      </button>
+    </form>
+  );
+}
+
+function TodoItem({ todo, onToggle, onDelete, onRename }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(todo.title);
+  const inputRef = useRef(null);
+
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  const save = async () => {
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== todo.title) await onRename(todo._id, trimmed);
+    setEditing(false);
+  };
+
+  return (
+    <div className="group flex items-center gap-3 rounded-2xl border px-3 py-2 hover:shadow-sm">
+      <input type="checkbox" checked={todo.completed} onChange={() => onToggle(todo._id, !todo.completed)} />
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="flex-1 rounded-xl border px-2 py-1 outline-none"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+        />
+      ) : (
+        <button
+          className={`flex-1 text-left ${todo.completed ? "line-through opacity-60" : ""}`}
+          onDoubleClick={() => setEditing(true)}
+          title="Double‑click to rename"
+        >
+          {todo.title}
+        </button>
+      )}
+      <button
+        onClick={() => onDelete(todo._id)}
+        className="invisible group-hover:visible rounded-xl border px-2 py-1 text-sm hover:bg-red-50 hover:text-red-600"
+      >
+        Delete
+      </button>
+    </div>
+  );
+}
+
+export default function App() {
+  const [apiBase, setApiBase] = useState(API_BASE_DEFAULT);
+  const [todos, setTodos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("newest");
+  const [query, setQuery] = useState("");
+  const q = useDebounced(query);
+
+  const client = useMemo(() => axios.create({ baseURL: apiBase }), [apiBase]);
+
+  const fetchTodos = async () => {
+    setLoading(true); setError("");
+    try {
+      const { data } = await client.get("/");
+      setTodos(data || []);
+    } catch (e) {
+      setError(e?.response?.data?.message || e.message || "Failed to fetch");
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { fetchTodos(); /* eslint-disable-next-line */ }, [client]);
+
+  // CRUD handlers with optimistic updates
+  const addTodo = async (title) => {
+    setBusy(true); setError("");
+    const optimistic = { _id: `tmp-${Date.now()}`, title, completed: false, optimistic: true };
+    setTodos((t) => [optimistic, ...t]);
+    try {
+      const { data } = await client.post("/", { title });
+      setTodos((t) => t.map((x) => (x._id === optimistic._id ? data : x)));
+    } catch (e) {
+      setTodos((t) => t.filter((x) => x._id !== optimistic._id));
+      setError(e?.response?.data?.message || e.message || "Add failed");
+    } finally { setBusy(false); }
+  };
+
+  const toggleTodo = async (id, completed) => {
+    const prev = todos;
+    setTodos((t) => t.map((x) => (x._id === id ? { ...x, completed } : x)));
+    try {
+      await client.put(`/${id}`, { completed });
+    } catch (e) {
+      setTodos(prev); setError("Toggle failed");
+    }
+  };
+
+  const renameTodo = async (id, title) => {
+    const prev = todos;
+    setTodos((t) => t.map((x) => (x._id === id ? { ...x, title } : x)));
+    try {
+      await client.put(`/${id}`, { title });
+    } catch (e) {
+      setTodos(prev); setError("Rename failed");
+    }
+  };
+
+  const deleteTodo = async (id) => {
+    const prev = todos;
+    setTodos((t) => t.filter((x) => x._id !== id));
+    try {
+      await client.delete(`/${id}`);
+    } catch (e) {
+      setTodos(prev); setError("Delete failed");
+    }
+  };
+
+  const clearCompleted = async () => {
+    const completed = todos.filter((t) => t.completed);
+    if (!completed.length) return;
+    const prev = todos;
+    setTodos((t) => t.filter((x) => !x.completed));
+    try {
+      await Promise.all(completed.map((t) => client.delete(`/${t._id}`)));
+    } catch (e) {
+      setTodos(prev); setError("Bulk delete failed");
+    }
+  };
+
+  const markAll = async (completed) => {
+    const prev = todos;
+    setTodos((t) => t.map((x) => ({ ...x, completed })));
+    try {
+      await Promise.all(todos.map((t) => client.put(`/${t._id}`, { completed })));
+    } catch (e) {
+      setTodos(prev); setError("Bulk update failed");
+    }
+  };
+
+  const filtered = useMemo(() => {
+    let list = [...todos];
+    if (q) list = list.filter((t) => t.title.toLowerCase().includes(q.toLowerCase()));
+    if (filter === "active") list = list.filter((t) => !t.completed);
+    if (filter === "completed") list = list.filter((t) => t.completed);
+    switch (sort) {
+      case "oldest":
+        list.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+        break;
+      case "az":
+        list.sort((a, b) => a.title.localeCompare(b.title));
+        break;
+      case "za":
+        list.sort((a, b) => b.title.localeCompare(a.title));
+        break;
+      default: // newest
+        list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    }
+    return list;
+  }, [todos, filter, sort, q]);
+
+  const stats = useMemo(() => ({
+    total: todos.length,
+    done: todos.filter((t) => t.completed).length,
+    left: todos.filter((t) => !t.completed).length,
+  }), [todos]);
+
+  return (
+    <div className="min-h-screen bg-gray-50 px-4 py-10">
+      <div className="mx-auto max-w-3xl space-y-6">
+        <header className="flex items-center justify-between">
+          <h1 className="text-3xl font-semibold">📝 Todo App</h1>
+          <div className="text-sm text-gray-600">Total: {stats.total} · Done: {stats.done} · Left: {stats.left}</div>
+        </header>
+
+        <Toolbar
+          apiBase={apiBase}
+          setApiBase={setApiBase}
+          query={query}
+          setQuery={setQuery}
+          filter={filter}
+          setFilter={setFilter}
+          sort={sort}
+          setSort={setSort}
+          refresh={fetchTodos}
+          loading={loading}
+        />
+
+        <TodoInput onAdd={addTodo} busy={busy} />
+
+        {error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button onClick={() => markAll(true)} className="rounded-2xl border px-3 py-1 text-sm hover:shadow">Mark all done</button>
+          <button onClick={() => markAll(false)} className="rounded-2xl border px-3 py-1 text-sm hover:shadow">Mark all active</button>
+          <button onClick={clearCompleted} className="rounded-2xl border px-3 py-1 text-sm hover:shadow">Clear completed</button>
+        </div>
+
+        <main className="space-y-2">
+          {loading ? (
+            <div className="rounded-2xl border bg-white p-4">Loading…</div>
+          ) : filtered.length ? (
+            filtered.map((todo) => (
+              <TodoItem
+                key={todo._id}
+                todo={todo}
+                onToggle={toggleTodo}
+                onDelete={deleteTodo}
+                onRename={renameTodo}
+              />
+            ))
+          ) : (
+            <div className="rounded-2xl border bg-white p-6 text-center text-gray-500">No todos yet. Add one above!</div>
+          )}
+        </main>
+
+        <footer className="pt-4 text-center text-xs text-gray-400">Connected to: {apiBase}</footer>
+      </div>
+    </div>
+  );
+} -->
